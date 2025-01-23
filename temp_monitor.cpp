@@ -9,12 +9,76 @@
 
 namespace fs = std::filesystem;
 std::string DEFAULT_MAX_FREQUENCY;
+std::string ORIGINAL_GOVERNOR;
 
 
 bool is_root()
 {
     return getuid() == 0;
 }
+
+
+// governors stuff
+
+std::string get_current_governor()
+{
+    std::ifstream governor_file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
+    std::string governor;
+    if (governor_file.is_open())
+    {
+        governor_file >> governor;
+        governor_file.close();
+    }
+    return governor;
+}
+
+
+void set_cpu_governor(const std::string& governor)
+{
+    // have to restore for every cpu core
+    for (const auto& entry : fs::directory_iterator("/sys/devices/system/cpu"))
+    {
+        if (fs::is_directory(entry))
+        {
+            std::ofstream governor_file(entry.path().string() + "/cpufreq/scaling_governor");
+            if (governor_file.is_open())
+            {
+                governor_file << governor;
+                governor_file.close();
+                std::cout << "cpu governor set to: " << governor << " for " << entry.path() << std::endl;
+            }
+            else
+            {
+                ;
+                //std::cerr << "error! unable to set governor for " << entry.path() << std::endl;
+            }
+        }
+    }
+}
+
+void restore_cpu_governor()
+{
+    // have to restore for every cpu core
+    for (const auto& entry : fs::directory_iterator("/sys/devices/system/cpu"))
+    {
+        if (fs::is_directory(entry))
+        {
+            std::ofstream governor_file(entry.path().string() + "/cpufreq/scaling_governor");
+            if (governor_file.is_open())
+            {
+                governor_file << ORIGINAL_GOVERNOR;
+                governor_file.close();
+                std::cout << "cpu governor set to: " << ORIGINAL_GOVERNOR << " for " << entry.path() << std::endl;
+            }
+            else
+            {
+                ;
+                //std::cerr << "error! unable to set governor for " << entry.path() << std::endl;
+            }
+        }
+    }
+}
+
 
 // read temperature in from a hwmon system file and return it in celcius
 float read_cpu_temp(const std::string& filepath)
@@ -88,7 +152,23 @@ void set_cpu_frequency(const std::string& frequency_path, const std::string& fre
     }
 }
 
-void restore_default_frequency(int signal)
+std::string get_current_frequency(const std::string& frequency_path)
+{
+    std::ifstream frequency_file(frequency_path);
+    if (frequency_file.is_open() == false)
+    {
+        std::cerr << "error, unable to get current frequency from " << frequency_path << std::endl;
+        return "";
+    }
+    else
+    {
+        std::string current_frequency;
+        frequency_file >> current_frequency;
+        return current_frequency; 
+    }
+}
+
+void restore_default_frequency()
 {
     if (DEFAULT_MAX_FREQUENCY.empty() == false)
     {
@@ -99,10 +179,17 @@ void restore_default_frequency(int signal)
             std::cout << "restores default max frequency: " << DEFAULT_MAX_FREQUENCY << std::endl;
         }
     }
-    
-    
+   
+}
+
+void cleanup(int signal)
+{
+    restore_default_frequency();
+    restore_cpu_governor();
     exit(signal);
 }
+
+
 
 
 int main()
@@ -127,29 +214,39 @@ int main()
         return 1;
     }
 
-    std::string DEFAULT_MAX_FREQUENCY = cpu_frequency_file;
+    std::cout << cpu_frequency_file << std::endl;
+    DEFAULT_MAX_FREQUENCY = get_current_frequency(cpu_frequency_file);
+    ORIGINAL_GOVERNOR = get_current_governor();
     // these are to change the max frequency back when the program ends!
-    signal(SIGINT, restore_default_frequency);
-    signal(SIGTERM, restore_default_frequency);
+    signal(SIGINT, cleanup);
+    signal(SIGTERM, cleanup);
 
+    set_cpu_governor("userspace");
+
+    float real_temp = -1.0;
     while (true)
     {
         for (const auto& temp_file : temp_files)
         {
             float temperature = read_cpu_temp(temp_file);
-            if (temperature >= 0)
+            if (temperature != real_temp)
             {
-                std::cout << "sensor: " << temp_file << " | temperature: " << temperature << "°C" << std::endl;
+                real_temp = temperature;
+            }
+        }
+        if (real_temp >= 0)
+            {
+                std::cout << "temperature: " << real_temp << "°C" << std::endl;
 
                 // adjust cpu frequency based on temperature
                 std::string max_frequency;
-                if (temperature < 50)
+                if (real_temp < 50)
                 {
                     max_frequency = "350000";
                 }
-                else if (50 < temperature < 70)
+                else if (50 < real_temp < 70)
                 {
-                    max_frequency = "180000";
+                    max_frequency = "200000";
                 }
                 else
                 {
@@ -159,7 +256,6 @@ int main()
                 set_cpu_frequency(cpu_frequency_file, max_frequency);
                 std::cout << "set cpu frequency to: " << max_frequency << std::endl;
             }
-        }
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
     return 0;
