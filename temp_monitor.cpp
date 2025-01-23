@@ -5,12 +5,18 @@
 #include <filesystem>
 #include <thread>
 #include <chrono>
-
+#include <signal.h>
 
 namespace fs = std::filesystem;
+std::string DEFAULT_MAX_FREQUENCY;
 
-// read temperature form sysfs
 
+bool is_root()
+{
+    return getuid() == 0;
+}
+
+// read temperature in from a hwmon system file and return it in celcius
 float read_cpu_temp(const std::string& filepath)
 {
     std::ifstream temp_file(filepath);
@@ -32,6 +38,7 @@ std::vector<std::string> find_hwmon_temperature_files()
 {
     std::vector<std::string> temp_files;
 
+    // hwmon is where the temp files are, they are named hwmon0, hwmon1, etc.
     for (const auto& entry : fs::directory_iterator("/sys/class/hwmon/"))
     {
         for (const auto& file : fs::directory_iterator(entry.path()))
@@ -64,6 +71,7 @@ std::string find_cpu_frequency_control_file()
 
 }
 
+// write the frequency to the scaling_max_freq file
 void set_cpu_frequency(const std::string& frequency_path, const std::string& frequency)
 {
     std::ofstream frequency_file(frequency_path);
@@ -80,9 +88,31 @@ void set_cpu_frequency(const std::string& frequency_path, const std::string& fre
     }
 }
 
+void restore_default_frequency(int signal)
+{
+    if (DEFAULT_MAX_FREQUENCY.empty() == false)
+    {
+        std::string cpu_freq_file = find_cpu_frequency_control_file();
+        if (cpu_freq_file.empty() == false)
+        {
+            set_cpu_frequency(cpu_freq_file, DEFAULT_MAX_FREQUENCY);
+            std::cout << "restores default max frequency: " << DEFAULT_MAX_FREQUENCY << std::endl;
+        }
+    }
+    
+    
+    exit(signal);
+}
+
 
 int main()
 {
+    if (is_root() == false)
+    {
+        std::cerr << "error! must run as root, use sudo." << std::endl;
+        return 1;
+    }
+
     std::vector<std::string> temp_files = find_hwmon_temperature_files();
 
     if (temp_files.empty())
@@ -97,6 +127,10 @@ int main()
         return 1;
     }
 
+    std::string DEFAULT_MAX_FREQUENCY = cpu_frequency_file;
+    // these are to change the max frequency back when the program ends!
+    signal(SIGINT, restore_default_frequency);
+    signal(SIGTERM, restore_default_frequency);
 
     while (true)
     {
@@ -111,9 +145,9 @@ int main()
                 std::string max_frequency;
                 if (temperature < 50)
                 {
-                    max_frequency = "350000";                   
+                    max_frequency = "350000";
                 }
-                else if (temperature < 70)
+                else if (50 < temperature < 70)
                 {
                     max_frequency = "180000";
                 }
