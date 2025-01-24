@@ -11,6 +11,11 @@ namespace fs = std::filesystem;
 std::string DEFAULT_MAX_FREQUENCY;
 std::string ORIGINAL_GOVERNOR;
 
+// some processors have different standard "settable" frequencies. These will work as guidelines.
+std::string high_frequency = "3500000";
+std::string mid_frequency = "2500000";
+std::string low_frequency = "1200000";
+
 
 bool is_root()
 {
@@ -221,40 +226,43 @@ int main()
     signal(SIGINT, cleanup);
     signal(SIGTERM, cleanup);
 
-    set_cpu_governor("userspace");
+    //set_cpu_governor("userspace");
 
-    float real_temp = -1.0;
     while (true)
     {
+        float current_max_temp = -1.0;
         for (const auto& temp_file : temp_files)
         {
             float temperature = read_cpu_temp(temp_file);
-            if (temperature != real_temp)
+            if (temperature > current_max_temp)
             {
-                real_temp = temperature;
+                current_max_temp = temperature;
             }
         }
+        float real_temp = current_max_temp;
         if (real_temp >= 0)
             {
                 std::cout << "temperature: " << real_temp << "°C" << std::endl;
 
                 // adjust cpu frequency based on temperature
                 std::string max_frequency;
-                if (real_temp < 50)
+                if (real_temp <= 50)
                 {
-                    max_frequency = "350000";
+                    max_frequency = high_frequency;
                 }
-                else if (50 < real_temp < 70)
+                else if (50 < real_temp && real_temp < 70)
                 {
-                    max_frequency = "200000";
+                    max_frequency = mid_frequency;
                 }
                 else
                 {
-                    max_frequency = "120000";
+                    max_frequency = low_frequency;
                 }
 
                 set_cpu_frequency(cpu_frequency_file, max_frequency);
-                std::cout << "set cpu frequency to: " << max_frequency << std::endl;
+                std::string real_frequency = get_current_frequency(cpu_frequency_file);
+                float current_ghz = std::stof (real_frequency) / 1000;
+                std::cout << "set cpu frequency to: " << current_ghz <<  "MHz" << std::endl;
             }
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
